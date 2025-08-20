@@ -19,17 +19,42 @@
 #pragma once
 
 #include <nori/mesh.h>
+#include <vector>
 
 NORI_NAMESPACE_BEGIN
 
 /**
+ * \brief Octree node for acceleration data structure
+ */
+struct OctreeNode {
+    /// Constructor for leaf node
+    OctreeNode() : isLeaf(true) {
+        for (int i = 0; i < 8; ++i)
+            children[i] = nullptr;
+    }
+    
+    /// Destructor
+    ~OctreeNode() {
+        if (!isLeaf) {
+            for (int i = 0; i < 8; ++i)
+                delete children[i];
+        }
+    }
+    
+    bool isLeaf;                      ///< True if this is a leaf node
+    std::vector<uint32_t> triangles;  ///< Triangle indices (only for leaf nodes)
+    OctreeNode* children[8];          ///< Child nodes (only for internal nodes)
+};
+
+/**
  * \brief Acceleration data structure for ray intersection queries
  *
- * The current implementation falls back to a brute force loop
- * through the geometry.
+ * Uses an octree to organize triangle data for efficient ray intersection.
  */
 class Accel {
 public:
+    /// Destructor to clean up the octree
+    ~Accel() { delete m_octree; }
     /**
      * \brief Register a triangle mesh for inclusion in the acceleration
      * data structure
@@ -38,7 +63,7 @@ public:
      */
     void addMesh(Mesh *mesh);
 
-    /// Build the acceleration data structure (currently a no-op)
+    /// Build the acceleration data structure (octree)
     void build();
 
     /// Return an axis-aligned box that bounds the scene
@@ -68,6 +93,17 @@ public:
 private:
     Mesh         *m_mesh = nullptr; ///< Mesh (only a single one for now)
     BoundingBox3f m_bbox;           ///< Bounding box of the entire scene
+    OctreeNode   *m_octree = nullptr; ///< Root of the octree
+    
+    /// Recursively build the octree
+    OctreeNode* buildOctree(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth = 0);
+    
+    /// Recursively intersect ray with octree
+    bool rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox, 
+                           const Ray3f& ray, Intersection& its, bool shadowRay) const;
+    
+    /// Get the bounding box of a child octant
+    BoundingBox3f getChildBBox(const BoundingBox3f& parentBBox, int childIndex) const;
 };
 
 NORI_NAMESPACE_END
