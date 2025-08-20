@@ -85,12 +85,13 @@ enum WarpType : int {
     CosineHemisphere,
     Beckmann,
     MicrofacetBRDF,
+    Hierarchical,
     WarpTypeCount
 };
 
 static const std::string kWarpTypeNames[WarpTypeCount] = {
     "square", "tent", "disk", "uniform_sphere", "uniform_hemisphere",
-    "cosine_hemisphere", "beckmann", "microfacet_brdf"
+    "cosine_hemisphere", "beckmann", "microfacet_brdf", "hierarchical"
 };
 
 
@@ -186,6 +187,8 @@ struct WarpTest {
                     br.wo = v;
                     br.measure = nori::ESolidAngle;
                     return bsdf->pdf(br);
+                } else if (warpType == Hierarchical) {
+                    return Warp::squareToHierarchicalPdf(Point2f(x, y), "scenes/lightprobe.exr");
                 } else {
                     throw NoriException("Invalid warp type");
                 }
@@ -245,6 +248,8 @@ struct WarpTest {
                 result << Warp::squareToCosineHemisphere(sample); break;
             case Beckmann:
                 result << Warp::squareToBeckmann(sample, parameterValue); break;
+            case Hierarchical:
+                result << Warp::squareToHierarchical(sample, "scenes/lightprobe.exr"), 0; break;
             case MicrofacetBRDF: {
                 BSDFQueryRecord br(bRec);
                 float value = bsdf->sample(br, sample).getLuminance();

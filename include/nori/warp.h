@@ -20,8 +20,34 @@
 
 #include <nori/common.h>
 #include <nori/sampler.h>
+#include <nori/bitmap.h>
 
 NORI_NAMESPACE_BEGIN
+
+/// Mipmap pyramid for hierarchical sample warping
+class HierarchicalSampler {
+public:
+    /// Constructor that builds the mipmap from an image file
+    HierarchicalSampler(const std::string &filename);
+
+    /// Sample a point according to the luminance distribution
+    Point2f sample(const Point2f &sample) const;
+
+    /// Evaluate the probability density at a given point
+    float pdf(const Point2f &p) const;
+
+private:
+    std::vector<std::vector<float>> m_pyramid;  ///< Mipmap pyramid
+    std::vector<Vector2i> m_sizes;              ///< Sizes at each level
+    int m_levels;                               ///< Number of mipmap levels
+    float m_normalization;                      ///< Normalization factor
+
+    /// Build the mipmap pyramid from luminance values
+    void buildPyramid(const std::vector<float> &luminance, int width, int height);
+
+    /// Get luminance from a color value
+    float getLuminance(const Color3f &color) const;
+};
 
 /// A collection of useful warping functions for importance sampling
 class Warp {
@@ -67,6 +93,12 @@ public:
 
     /// Probability density of \ref squareToBeckmann()
     static float squareToBeckmannPdf(const Vector3f &m, float alpha);
+
+    /// Hierarchical sample warping using mipmapping for importance sampling
+    static Point2f squareToHierarchical(const Point2f &sample, const std::string &filename);
+
+    /// Probability density of \ref squareToHierarchical()
+    static float squareToHierarchicalPdf(const Point2f &p, const std::string &filename);
 };
 
 NORI_NAMESPACE_END

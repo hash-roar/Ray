@@ -27,6 +27,15 @@ NORI_NAMESPACE_BEGIN
  */
 class Emitter : public NoriObject {
 public:
+    /// Sample a point on the emitter surface
+    virtual Color3f sample(const Point3f &ref, const Point2f &sample, 
+                          Point3f &p, Vector3f &n, float &pdf) const = 0;
+
+    /// Evaluate the radiance emitted from point p in direction d
+    virtual Color3f eval(const Point3f &p, const Vector3f &d) const = 0;
+
+    /// Compute the probability density of sampling point p from reference point ref
+    virtual float pdf(const Point3f &ref, const Point3f &p) const = 0;
 
     /**
      * \brief Return the type of object (i.e. Mesh/Emitter/etc.) 

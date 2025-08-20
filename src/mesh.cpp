@@ -38,6 +38,18 @@ void Mesh::activate() {
         m_bsdf = static_cast<BSDF *>(
             NoriObjectFactory::createInstance("diffuse", PropertyList()));
     }
+    
+    // Build triangle sampling PDF based on surface areas
+    m_trianglePDF.clear();
+    m_surfaceArea = 0.0f;
+    
+    for (uint32_t i = 0; i < getTriangleCount(); ++i) {
+        float area = surfaceArea(i);
+        m_trianglePDF.append(area);
+        m_surfaceArea += area;
+    }
+    
+    m_trianglePDF.normalize();
 }
 
 float Mesh::surfaceArea(uint32_t index) const {
@@ -162,6 +174,38 @@ std::string Intersection::toString() const {
         indent(geoFrame.toString()),
         mesh ? mesh->toString() : std::string("null")
     );
+}
+
+void Mesh::sampleSurface(const Point2f &sample, Point3f &p, Vector3f &n, float &pdf) const {
+    // Sample a triangle proportional to its area
+    uint32_t triangleIndex = (uint32_t) m_trianglePDF.sample(sample.x());
+    
+    // Get triangle vertices
+    uint32_t i0 = m_F(0, triangleIndex), i1 = m_F(1, triangleIndex), i2 = m_F(2, triangleIndex);
+    const Point3f p0 = m_V.col(i0), p1 = m_V.col(i1), p2 = m_V.col(i2);
+    
+    // Sample a point on the triangle using barycentric coordinates
+    // Using the mapping: (α, β) = (1 - √(1 - ξ₁), ξ₂ * √(1 - ξ₁))
+    float sqrt_xi1 = std::sqrt(sample.x());
+    float alpha = 1.0f - sqrt_xi1;
+    float beta = sample.y() * sqrt_xi1;
+    float gamma = 1.0f - alpha - beta;
+    
+    // Compute sampled position
+    p = alpha * p0 + beta * p1 + gamma * p2;
+    
+    // Compute interpolated normal
+    if (m_N.size() > 0) {
+        // Use interpolated vertex normals if available
+        const Vector3f n0 = m_N.col(i0), n1 = m_N.col(i1), n2 = m_N.col(i2);
+        n = (alpha * n0 + beta * n1 + gamma * n2).normalized();
+    } else {
+        // Use face normal
+        n = ((p1 - p0).cross(p2 - p0)).normalized();
+    }
+    
+    // Compute PDF (reciprocal of total surface area)
+    pdf = 1.0f / m_surfaceArea;
 }
 
 NORI_NAMESPACE_END

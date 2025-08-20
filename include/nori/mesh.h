@@ -21,6 +21,7 @@
 #include <nori/object.h>
 #include <nori/frame.h>
 #include <nori/bbox.h>
+#include <nori/dpdf.h>
 
 NORI_NAMESPACE_BEGIN
 
@@ -157,6 +158,12 @@ public:
     /// Return a human-readable summary of this instance
     std::string toString() const;
 
+    /// Sample a point uniformly on the mesh surface
+    void sampleSurface(const Point2f &sample, Point3f &p, Vector3f &n, float &pdf) const;
+
+    /// Return the total surface area of the mesh
+    float getSurfaceArea() const { return m_surfaceArea; }
+
     /**
      * \brief Return the type of object (i.e. Mesh/BSDF/etc.)
      * provided by this instance
@@ -176,6 +183,8 @@ protected:
     BSDF         *m_bsdf = nullptr;      ///< BSDF of the surface
     Emitter    *m_emitter = nullptr;     ///< Associated emitter, if any
     BoundingBox3f m_bbox;                ///< Bounding box of the mesh
+    DiscretePDF   m_trianglePDF;         ///< PDF for triangle sampling
+    float         m_surfaceArea = 0.0f;  ///< Total surface area
 };
 
 NORI_NAMESPACE_END
