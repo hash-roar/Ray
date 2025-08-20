@@ -33,6 +33,13 @@ struct OctreeNode {
             children[i] = nullptr;
     }
     
+    /// Constructor for internal node with pre-computed child bboxes
+    OctreeNode(const BoundingBox3f& bbox) : isLeaf(false) {
+        for (int i = 0; i < 8; ++i)
+            children[i] = nullptr;
+        precomputeChildBBoxes(bbox);
+    }
+    
     /// Destructor
     ~OctreeNode() {
         if (!isLeaf) {
@@ -41,9 +48,32 @@ struct OctreeNode {
         }
     }
     
+    /// Pre-compute child bounding boxes for faster access
+    void precomputeChildBBoxes(const BoundingBox3f& parentBBox) {
+        Point3f center = parentBBox.getCenter();
+        Point3f min = parentBBox.min;
+        Point3f max = parentBBox.max;
+        
+        for (int i = 0; i < 8; ++i) {
+            Point3f childMin, childMax;
+            
+            childMin.x() = (i & 1) ? center.x() : min.x();
+            childMax.x() = (i & 1) ? max.x() : center.x();
+            
+            childMin.y() = (i & 2) ? center.y() : min.y();
+            childMax.y() = (i & 2) ? max.y() : center.y();
+            
+            childMin.z() = (i & 4) ? center.z() : min.z();
+            childMax.z() = (i & 4) ? max.z() : center.z();
+            
+            childBBoxes[i] = BoundingBox3f(childMin, childMax);
+        }
+    }
+    
     bool isLeaf;                      ///< True if this is a leaf node
     std::vector<uint32_t> triangles;  ///< Triangle indices (only for leaf nodes)
     OctreeNode* children[8];          ///< Child nodes (only for internal nodes)
+    BoundingBox3f childBBoxes[8];     ///< Pre-computed child bounding boxes (only for internal nodes)
 };
 
 /**
@@ -89,21 +119,30 @@ public:
      * \return \c true if an intersection was found
      */
     bool rayIntersect(const Ray3f &ray, Intersection &its, bool shadowRay) const;
+    
+    /// Enable/disable parallel construction (for benchmarking)
+    static void setParallelConstruction(bool enable) { s_useParallelConstruction = enable; }
+    static bool getParallelConstruction() { return s_useParallelConstruction; }
 
 private:
     Mesh         *m_mesh = nullptr; ///< Mesh (only a single one for now)
     BoundingBox3f m_bbox;           ///< Bounding box of the entire scene
     OctreeNode   *m_octree = nullptr; ///< Root of the octree
     
-    /// Recursively build the octree
+    static bool s_useParallelConstruction; ///< Flag to control parallel construction
+    
+    /// Recursively build the octree (serial version)
     OctreeNode* buildOctree(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth = 0);
+    
+    /// Recursively build the octree with parallel construction
+    OctreeNode* buildOctreeParallel(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth = 0);
+    
+    /// Recursively build the octree (serial version for use in parallel construction)
+    OctreeNode* buildOctreeSerial(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth = 0);
     
     /// Recursively intersect ray with octree
     bool rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox, 
                            const Ray3f& ray, Intersection& its, bool shadowRay) const;
-    
-    /// Get the bounding box of a child octant
-    BoundingBox3f getChildBBox(const BoundingBox3f& parentBBox, int childIndex) const;
 };
 
 NORI_NAMESPACE_END

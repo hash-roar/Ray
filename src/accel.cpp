@@ -18,10 +18,13 @@
 
 #include <nori/accel.h>
 #include <Eigen/Geometry>
-#include <algorithm>
 #include <vector>
+#include <tbb/parallel_invoke.h>
+#include <tbb/task_group.h>
 
 NORI_NAMESPACE_BEGIN
+
+bool Accel::s_useParallelConstruction = true;  // Default to parallel construction
 
 void Accel::addMesh(Mesh *mesh) {
     if (m_mesh)
@@ -40,8 +43,12 @@ void Accel::build() {
         triangles.push_back(i);
     }
     
-    // Build the octree
-    m_octree = buildOctree(m_bbox, triangles);
+    // Build the octree (choose parallel or serial based on flag)
+    if (s_useParallelConstruction) {
+        m_octree = buildOctreeParallel(m_bbox, triangles);
+    } else {
+        m_octree = buildOctree(m_bbox, triangles);
+    }
 }
 
 bool Accel::rayIntersect(const Ray3f &ray_, Intersection &its, bool shadowRay) const {
@@ -75,20 +82,19 @@ OctreeNode* Accel::buildOctree(const BoundingBox3f& bbox, const std::vector<uint
     }
     
     // Create internal node
-    OctreeNode* node = new OctreeNode();
+    OctreeNode* node = new OctreeNode(bbox);
     node->isLeaf = false;
     
     // Create 8 triangle lists for the 8 octants
     std::vector<uint32_t> childTriangles[8];
     
-    // Classify triangles into octants
+    // Classify triangles into octants using pre-computed bounding boxes
     for (uint32_t triIdx : triangles) {
         BoundingBox3f triBBox = m_mesh->getBoundingBox(triIdx);
         
         // Check which children this triangle overlaps
         for (int i = 0; i < 8; ++i) {
-            BoundingBox3f childBBox = getChildBBox(bbox, i);
-            if (triBBox.overlaps(childBBox)) {
+            if (triBBox.overlaps(node->childBBoxes[i])) {
                 childTriangles[i].push_back(triIdx);
             }
         }
@@ -97,61 +103,162 @@ OctreeNode* Accel::buildOctree(const BoundingBox3f& bbox, const std::vector<uint
     // Recursively build children
     for (int i = 0; i < 8; ++i) {
         if (!childTriangles[i].empty()) {
-            BoundingBox3f childBBox = getChildBBox(bbox, i);
-            node->children[i] = buildOctree(childBBox, childTriangles[i], depth + 1);
+            node->children[i] = buildOctree(node->childBBoxes[i], childTriangles[i], depth + 1);
         }
     }
     
     return node;
 }
 
-BoundingBox3f Accel::getChildBBox(const BoundingBox3f& parentBBox, int childIndex) const {
-    Point3f center = parentBBox.getCenter();
-    Point3f min = parentBBox.min;
-    Point3f max = parentBBox.max;
+OctreeNode* Accel::buildOctreeParallel(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth) {
+    const int MAX_DEPTH = 10;  // Limit depth to avoid pathological cases
+    const int MIN_TRIANGLES = 10;  // Create leaf if fewer than this many triangles
+    const int PARALLEL_THRESHOLD = 1000;  // Use parallel construction for subtrees with many triangles
     
-    // Child bounding box corners based on octant index
-    Point3f childMin, childMax;
+    // Create leaf node if stopping criteria are met
+    if (triangles.empty()) {
+        return nullptr;
+    }
     
-    childMin.x() = (childIndex & 1) ? center.x() : min.x();
-    childMax.x() = (childIndex & 1) ? max.x() : center.x();
+    if (triangles.size() <= MIN_TRIANGLES || depth >= MAX_DEPTH) {
+        OctreeNode* leaf = new OctreeNode();
+        leaf->isLeaf = true;
+        leaf->triangles = triangles;
+        return leaf;
+    }
     
-    childMin.y() = (childIndex & 2) ? center.y() : min.y();
-    childMax.y() = (childIndex & 2) ? max.y() : center.y();
+    // Create internal node
+    OctreeNode* node = new OctreeNode(bbox);
+    node->isLeaf = false;
     
-    childMin.z() = (childIndex & 4) ? center.z() : min.z();
-    childMax.z() = (childIndex & 4) ? max.z() : center.z();
+    // Create 8 triangle lists for the 8 octants
+    std::vector<uint32_t> childTriangles[8];
     
-    return BoundingBox3f(childMin, childMax);
+    // Classify triangles into octants using pre-computed bounding boxes
+    for (uint32_t triIdx : triangles) {
+        BoundingBox3f triBBox = m_mesh->getBoundingBox(triIdx);
+        
+        // Check which children this triangle overlaps
+        for (int i = 0; i < 8; ++i) {
+            if (triBBox.overlaps(node->childBBoxes[i])) {
+                childTriangles[i].push_back(triIdx);
+            }
+        }
+    }
+    
+    // Decide whether to build children in parallel or serial
+    bool useParallel = (triangles.size() > PARALLEL_THRESHOLD && depth < 3);
+    
+    if (useParallel) {
+        // Parallel construction using TBB task_group
+        tbb::task_group tg;
+        
+        for (int i = 0; i < 8; ++i) {
+            if (!childTriangles[i].empty()) {
+                tg.run([=, &node]() {
+                    node->children[i] = buildOctreeSerial(node->childBBoxes[i], childTriangles[i], depth + 1);
+                });
+            }
+        }
+        
+        tg.wait();  // Wait for all child constructions to complete
+    } else {
+        // Serial construction for smaller subtrees
+        for (int i = 0; i < 8; ++i) {
+            if (!childTriangles[i].empty()) {
+                node->children[i] = buildOctreeSerial(node->childBBoxes[i], childTriangles[i], depth + 1);
+            }
+        }
+    }
+    
+    return node;
+}
+
+OctreeNode* Accel::buildOctreeSerial(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth) {
+    const int MAX_DEPTH = 10;  // Limit depth to avoid pathological cases
+    const int MIN_TRIANGLES = 10;  // Create leaf if fewer than this many triangles
+    
+    // Create leaf node if stopping criteria are met
+    if (triangles.empty()) {
+        return nullptr;
+    }
+    
+    if (triangles.size() <= MIN_TRIANGLES || depth >= MAX_DEPTH) {
+        OctreeNode* leaf = new OctreeNode();
+        leaf->isLeaf = true;
+        leaf->triangles = triangles;
+        return leaf;
+    }
+    
+    // Create internal node
+    OctreeNode* node = new OctreeNode(bbox);
+    node->isLeaf = false;
+    
+    // Create 8 triangle lists for the 8 octants
+    std::vector<uint32_t> childTriangles[8];
+    
+    // Classify triangles into octants using pre-computed bounding boxes
+    for (uint32_t triIdx : triangles) {
+        BoundingBox3f triBBox = m_mesh->getBoundingBox(triIdx);
+        
+        // Check which children this triangle overlaps
+        for (int i = 0; i < 8; ++i) {
+            if (triBBox.overlaps(node->childBBoxes[i])) {
+                childTriangles[i].push_back(triIdx);
+            }
+        }
+    }
+    
+    // Recursively build children (serial)
+    for (int i = 0; i < 8; ++i) {
+        if (!childTriangles[i].empty()) {
+            node->children[i] = buildOctreeSerial(node->childBBoxes[i], childTriangles[i], depth + 1);
+        }
+    }
+    
+    return node;
 }
 
 bool Accel::rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox, 
                               const Ray3f& ray, Intersection& its, bool shadowRay) const {
     if (!node) return false;
     
-    // Check if ray intersects this bounding box
-    if (!bbox.rayIntersect(ray)) {
+    // Fast ray-box intersection test with early exit
+    float tNear, tFar;
+    if (!bbox.rayIntersect(ray, tNear, tFar)) {
+        return false;
+    }
+    
+    // Early termination: if we already have a closer intersection, skip this node
+    if (tNear > ray.maxt) {
         return false;
     }
     
     if (node->isLeaf) {
-        // Leaf node: test all triangles
+        // Leaf node: test all triangles with optimized loop
         bool foundIntersection = false;
         uint32_t closestTriangle = (uint32_t) -1;
-        Ray3f rayLocal(ray);  // Local copy for updating maxt
+        float closestT = ray.maxt;
         
-        for (uint32_t triIdx : node->triangles) {
+        const uint32_t* triangles = node->triangles.data();
+        const size_t numTriangles = node->triangles.size();
+        
+        for (size_t j = 0; j < numTriangles; ++j) {
+            uint32_t triIdx = triangles[j];
             float u, v, t;
-            if (m_mesh->rayIntersect(triIdx, rayLocal, u, v, t)) {
+            if (m_mesh->rayIntersect(triIdx, ray, u, v, t)) {
                 if (shadowRay) {
                     return true;  // Early exit for shadow rays
                 }
                 
-                rayLocal.maxt = its.t = t;
-                its.uv = Point2f(u, v);
-                its.mesh = m_mesh;
-                closestTriangle = triIdx;
-                foundIntersection = true;
+                if (t < closestT) {
+                    closestT = t;
+                    its.t = t;
+                    its.uv = Point2f(u, v);
+                    its.mesh = m_mesh;
+                    closestTriangle = triIdx;
+                    foundIntersection = true;
+                }
             }
         }
         
@@ -191,41 +298,43 @@ bool Accel::rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox
         bool foundIntersection = false;
         Ray3f rayLocal(ray);
         
-        // Structure to hold child information with distances
+        // Fixed-size arrays to avoid dynamic allocation
         struct ChildInfo {
             int index;
             float tNear;
-            BoundingBox3f bbox;
-            
-            bool operator<(const ChildInfo& other) const {
-                return tNear < other.tNear;
-            }
         };
         
-        std::vector<ChildInfo> childrenInfo;
-        childrenInfo.reserve(8);
+        ChildInfo childrenInfo[8];
+        int validChildCount = 0;
         
         // Collect all valid children with their intersection distances
         for (int i = 0; i < 8; ++i) {
             if (node->children[i]) {
-                BoundingBox3f childBBox = getChildBBox(bbox, i);
-                float tNear, tFar;
+                float childTNear, childTFar;
                 
-                if (childBBox.rayIntersect(ray, tNear, tFar)) {
-                    ChildInfo info;
-                    info.index = i;
-                    info.tNear = tNear;
-                    info.bbox = childBBox;
-                    childrenInfo.push_back(info);
+                if (node->childBBoxes[i].rayIntersect(ray, childTNear, childTFar)) {
+                    childrenInfo[validChildCount].index = i;
+                    childrenInfo[validChildCount].tNear = childTNear;
+                    validChildCount++;
                 }
             }
         }
         
-        // Sort children by distance (closest first)
-        std::sort(childrenInfo.begin(), childrenInfo.end());
+        // Simple insertion sort for small arrays (much faster than std::sort for <= 8 elements)
+        for (int i = 1; i < validChildCount; ++i) {
+            ChildInfo key = childrenInfo[i];
+            int j = i - 1;
+            while (j >= 0 && childrenInfo[j].tNear > key.tNear) {
+                childrenInfo[j + 1] = childrenInfo[j];
+                j--;
+            }
+            childrenInfo[j + 1] = key;
+        }
         
         // Traverse children in sorted order with early termination
-        for (const auto& childInfo : childrenInfo) {
+        for (int i = 0; i < validChildCount; ++i) {
+            const ChildInfo& childInfo = childrenInfo[i];
+            
             // Early termination: if we already found an intersection closer than
             // this child's bounding box, skip it
             if (foundIntersection && its.t < childInfo.tNear) {
@@ -233,7 +342,7 @@ bool Accel::rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox
             }
             
             Intersection childIts;
-            if (rayIntersectOctree(node->children[childInfo.index], childInfo.bbox, rayLocal, childIts, shadowRay)) {
+            if (rayIntersectOctree(node->children[childInfo.index], node->childBBoxes[childInfo.index], rayLocal, childIts, shadowRay)) {
                 if (shadowRay) {
                     return true;  // Early exit for shadow rays
                 }

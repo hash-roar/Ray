@@ -1,6 +1,6 @@
-cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required (VERSION 3.10)
 project(nori)
-
+set(EXPORT_COMPILE_COMMANDS ON)
 add_subdirectory(ext ext_build)
 
 include_directories(
@@ -88,6 +88,9 @@ add_executable(nori
   src/microfacet.cpp
   src/mirror.cpp
   src/dielectric.cpp
+
+  # self add
+  src/normal.cpp
 )
 
 add_definitions(${NANOGUI_EXTRA_DEFS})
