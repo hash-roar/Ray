@@ -24,6 +24,17 @@
 NORI_NAMESPACE_BEGIN
 
 /**
+ * \brief Triangle reference with mesh information
+ */
+struct TriangleRef {
+    uint32_t meshIndex;     ///< Index of the mesh in the mesh list
+    uint32_t triangleIndex; ///< Index of the triangle within the mesh
+    
+    TriangleRef() = default;
+    TriangleRef(uint32_t meshIdx, uint32_t triIdx) : meshIndex(meshIdx), triangleIndex(triIdx) {}
+};
+
+/**
  * \brief Octree node for acceleration data structure
  */
 struct OctreeNode {
@@ -70,10 +81,10 @@ struct OctreeNode {
         }
     }
     
-    bool isLeaf;                      ///< True if this is a leaf node
-    std::vector<uint32_t> triangles;  ///< Triangle indices (only for leaf nodes)
-    OctreeNode* children[8];          ///< Child nodes (only for internal nodes)
-    BoundingBox3f childBBoxes[8];     ///< Pre-computed child bounding boxes (only for internal nodes)
+    bool isLeaf;                          ///< True if this is a leaf node
+    std::vector<TriangleRef> triangles;   ///< Triangle references (only for leaf nodes)
+    OctreeNode* children[8];              ///< Child nodes (only for internal nodes)
+    BoundingBox3f childBBoxes[8];         ///< Pre-computed child bounding boxes (only for internal nodes)
 };
 
 /**
@@ -98,6 +109,12 @@ public:
 
     /// Return an axis-aligned box that bounds the scene
     const BoundingBox3f &getBoundingBox() const { return m_bbox; }
+
+    /// Clear all meshes and reset the acceleration structure
+    void clear();
+
+    /// Return the number of meshes
+    size_t getMeshCount() const { return m_meshes.size(); }
 
     /**
      * \brief Intersect a ray against all triangles stored in the scene and
@@ -125,20 +142,20 @@ public:
     static bool getParallelConstruction() { return s_useParallelConstruction; }
 
 private:
-    Mesh         *m_mesh = nullptr; ///< Mesh (only a single one for now)
-    BoundingBox3f m_bbox;           ///< Bounding box of the entire scene
+    std::vector<Mesh*> m_meshes;     ///< Vector of all meshes
+    BoundingBox3f m_bbox;            ///< Bounding box of the entire scene
     OctreeNode   *m_octree = nullptr; ///< Root of the octree
     
     static bool s_useParallelConstruction; ///< Flag to control parallel construction
     
     /// Recursively build the octree (serial version)
-    OctreeNode* buildOctree(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth = 0);
+    OctreeNode* buildOctree(const BoundingBox3f& bbox, const std::vector<TriangleRef>& triangles, int depth = 0);
     
     /// Recursively build the octree with parallel construction
-    OctreeNode* buildOctreeParallel(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth = 0);
+    OctreeNode* buildOctreeParallel(const BoundingBox3f& bbox, const std::vector<TriangleRef>& triangles, int depth = 0);
     
     /// Recursively build the octree (serial version for use in parallel construction)
-    OctreeNode* buildOctreeSerial(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth = 0);
+    OctreeNode* buildOctreeSerial(const BoundingBox3f& bbox, const std::vector<TriangleRef>& triangles, int depth = 0);
     
     /// Recursively intersect ray with octree
     bool rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox, 

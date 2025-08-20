@@ -27,20 +27,42 @@ NORI_NAMESPACE_BEGIN
 bool Accel::s_useParallelConstruction = true;  // Default to parallel construction
 
 void Accel::addMesh(Mesh *mesh) {
-    if (m_mesh)
-        throw NoriException("Accel: only a single mesh is supported!");
-    m_mesh = mesh;
-    m_bbox = m_mesh->getBoundingBox();
+    m_meshes.push_back(mesh);
+    
+    // Update bounding box to include this mesh
+    if (m_meshes.size() == 1) {
+        m_bbox = mesh->getBoundingBox();
+    } else {
+        m_bbox.expandBy(mesh->getBoundingBox());
+    }
+}
+
+void Accel::clear() {
+    m_meshes.clear();
+    delete m_octree;
+    m_octree = nullptr;
+    m_bbox = BoundingBox3f();
 }
 
 void Accel::build() {
-    if (!m_mesh) return;
+    if (m_meshes.empty()) return;
     
-    // Create list of all triangle indices
-    std::vector<uint32_t> triangles;
-    triangles.reserve(m_mesh->getTriangleCount());
-    for (uint32_t i = 0; i < m_mesh->getTriangleCount(); ++i) {
-        triangles.push_back(i);
+    // Create list of all triangle references
+    std::vector<TriangleRef> triangles;
+    
+    // Count total triangles to reserve space
+    size_t totalTriangles = 0;
+    for (size_t meshIdx = 0; meshIdx < m_meshes.size(); ++meshIdx) {
+        totalTriangles += m_meshes[meshIdx]->getTriangleCount();
+    }
+    triangles.reserve(totalTriangles);
+    
+    // Add all triangles from all meshes
+    for (size_t meshIdx = 0; meshIdx < m_meshes.size(); ++meshIdx) {
+        Mesh* mesh = m_meshes[meshIdx];
+        for (uint32_t triIdx = 0; triIdx < mesh->getTriangleCount(); ++triIdx) {
+            triangles.emplace_back(static_cast<uint32_t>(meshIdx), triIdx);
+        }
     }
     
     // Build the octree (choose parallel or serial based on flag)
@@ -52,7 +74,7 @@ void Accel::build() {
 }
 
 bool Accel::rayIntersect(const Ray3f &ray_, Intersection &its, bool shadowRay) const {
-    if (!m_mesh || !m_octree) return false;
+    if (m_meshes.empty() || !m_octree) return false;
     
     Ray3f ray(ray_); /// Make a copy of the ray
     
@@ -65,7 +87,7 @@ bool Accel::rayIntersect(const Ray3f &ray_, Intersection &its, bool shadowRay) c
     return rayIntersectOctree(m_octree, m_bbox, ray, its, shadowRay);
 }
 
-OctreeNode* Accel::buildOctree(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth) {
+OctreeNode* Accel::buildOctree(const BoundingBox3f& bbox, const std::vector<TriangleRef>& triangles, int depth) {
     const int MAX_DEPTH = 10;  // Limit depth to avoid pathological cases
     const int MIN_TRIANGLES = 10;  // Create leaf if fewer than this many triangles
     
@@ -86,16 +108,17 @@ OctreeNode* Accel::buildOctree(const BoundingBox3f& bbox, const std::vector<uint
     node->isLeaf = false;
     
     // Create 8 triangle lists for the 8 octants
-    std::vector<uint32_t> childTriangles[8];
+    std::vector<TriangleRef> childTriangles[8];
     
     // Classify triangles into octants using pre-computed bounding boxes
-    for (uint32_t triIdx : triangles) {
-        BoundingBox3f triBBox = m_mesh->getBoundingBox(triIdx);
+    for (const TriangleRef& triRef : triangles) {
+        Mesh* mesh = m_meshes[triRef.meshIndex];
+        BoundingBox3f triBBox = mesh->getBoundingBox(triRef.triangleIndex);
         
         // Check which children this triangle overlaps
         for (int i = 0; i < 8; ++i) {
             if (triBBox.overlaps(node->childBBoxes[i])) {
-                childTriangles[i].push_back(triIdx);
+                childTriangles[i].push_back(triRef);
             }
         }
     }
@@ -110,7 +133,7 @@ OctreeNode* Accel::buildOctree(const BoundingBox3f& bbox, const std::vector<uint
     return node;
 }
 
-OctreeNode* Accel::buildOctreeParallel(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth) {
+OctreeNode* Accel::buildOctreeParallel(const BoundingBox3f& bbox, const std::vector<TriangleRef>& triangles, int depth) {
     const int MAX_DEPTH = 10;  // Limit depth to avoid pathological cases
     const int MIN_TRIANGLES = 10;  // Create leaf if fewer than this many triangles
     const int PARALLEL_THRESHOLD = 1000;  // Use parallel construction for subtrees with many triangles
@@ -132,16 +155,17 @@ OctreeNode* Accel::buildOctreeParallel(const BoundingBox3f& bbox, const std::vec
     node->isLeaf = false;
     
     // Create 8 triangle lists for the 8 octants
-    std::vector<uint32_t> childTriangles[8];
+    std::vector<TriangleRef> childTriangles[8];
     
     // Classify triangles into octants using pre-computed bounding boxes
-    for (uint32_t triIdx : triangles) {
-        BoundingBox3f triBBox = m_mesh->getBoundingBox(triIdx);
+    for (const TriangleRef& triRef : triangles) {
+        Mesh* mesh = m_meshes[triRef.meshIndex];
+        BoundingBox3f triBBox = mesh->getBoundingBox(triRef.triangleIndex);
         
         // Check which children this triangle overlaps
         for (int i = 0; i < 8; ++i) {
             if (triBBox.overlaps(node->childBBoxes[i])) {
-                childTriangles[i].push_back(triIdx);
+                childTriangles[i].push_back(triRef);
             }
         }
     }
@@ -174,7 +198,7 @@ OctreeNode* Accel::buildOctreeParallel(const BoundingBox3f& bbox, const std::vec
     return node;
 }
 
-OctreeNode* Accel::buildOctreeSerial(const BoundingBox3f& bbox, const std::vector<uint32_t>& triangles, int depth) {
+OctreeNode* Accel::buildOctreeSerial(const BoundingBox3f& bbox, const std::vector<TriangleRef>& triangles, int depth) {
     const int MAX_DEPTH = 10;  // Limit depth to avoid pathological cases
     const int MIN_TRIANGLES = 10;  // Create leaf if fewer than this many triangles
     
@@ -195,16 +219,17 @@ OctreeNode* Accel::buildOctreeSerial(const BoundingBox3f& bbox, const std::vecto
     node->isLeaf = false;
     
     // Create 8 triangle lists for the 8 octants
-    std::vector<uint32_t> childTriangles[8];
+    std::vector<TriangleRef> childTriangles[8];
     
     // Classify triangles into octants using pre-computed bounding boxes
-    for (uint32_t triIdx : triangles) {
-        BoundingBox3f triBBox = m_mesh->getBoundingBox(triIdx);
+    for (const TriangleRef& triRef : triangles) {
+        Mesh* mesh = m_meshes[triRef.meshIndex];
+        BoundingBox3f triBBox = mesh->getBoundingBox(triRef.triangleIndex);
         
         // Check which children this triangle overlaps
         for (int i = 0; i < 8; ++i) {
             if (triBBox.overlaps(node->childBBoxes[i])) {
-                childTriangles[i].push_back(triIdx);
+                childTriangles[i].push_back(triRef);
             }
         }
     }
@@ -237,16 +262,18 @@ bool Accel::rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox
     if (node->isLeaf) {
         // Leaf node: test all triangles with optimized loop
         bool foundIntersection = false;
+        uint32_t closestMeshIndex = (uint32_t) -1;
         uint32_t closestTriangle = (uint32_t) -1;
         float closestT = ray.maxt;
         
-        const uint32_t* triangles = node->triangles.data();
+        const TriangleRef* triangles = node->triangles.data();
         const size_t numTriangles = node->triangles.size();
         
         for (size_t j = 0; j < numTriangles; ++j) {
-            uint32_t triIdx = triangles[j];
+            const TriangleRef& triRef = triangles[j];
+            Mesh* mesh = m_meshes[triRef.meshIndex];
             float u, v, t;
-            if (m_mesh->rayIntersect(triIdx, ray, u, v, t)) {
+            if (mesh->rayIntersect(triRef.triangleIndex, ray, u, v, t)) {
                 if (shadowRay) {
                     return true;  // Early exit for shadow rays
                 }
@@ -255,8 +282,9 @@ bool Accel::rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox
                     closestT = t;
                     its.t = t;
                     its.uv = Point2f(u, v);
-                    its.mesh = m_mesh;
-                    closestTriangle = triIdx;
+                    its.mesh = mesh;
+                    closestMeshIndex = triRef.meshIndex;
+                    closestTriangle = triRef.triangleIndex;
                     foundIntersection = true;
                 }
             }
@@ -267,10 +295,11 @@ bool Accel::rayIntersectOctree(const OctreeNode* node, const BoundingBox3f& bbox
             Vector3f bary;
             bary << 1-its.uv.sum(), its.uv;
 
-            const MatrixXf &V  = m_mesh->getVertexPositions();
-            const MatrixXf &N  = m_mesh->getVertexNormals();
-            const MatrixXf &UV = m_mesh->getVertexTexCoords();
-            const MatrixXu &F  = m_mesh->getIndices();
+            Mesh* mesh = m_meshes[closestMeshIndex];
+            const MatrixXf &V  = mesh->getVertexPositions();
+            const MatrixXf &N  = mesh->getVertexNormals();
+            const MatrixXf &UV = mesh->getVertexTexCoords();
+            const MatrixXu &F  = mesh->getIndices();
 
             uint32_t idx0 = F(0, closestTriangle), idx1 = F(1, closestTriangle), idx2 = F(2, closestTriangle);
             Point3f p0 = V.col(idx0), p1 = V.col(idx1), p2 = V.col(idx2);
