@@ -47,46 +47,84 @@ public:
             result += its.mesh->getEmitter()->eval(its.p, wo);
         }
 
-        // Sample direct illumination from all emitters
-        const auto &emitters = scene->getEmitters();
-        if (!emitters.empty()) {
-            // Pick an emitter uniformly at random
-            uint32_t emitterIndex = std::min((uint32_t)(sampler->next1D() * emitters.size()), 
-                                           (uint32_t)emitters.size() - 1);
-            const Emitter *emitter = emitters[emitterIndex];
-            float emitterPdf = 1.0f / emitters.size();
+        // Check if the material is specular or diffuse
+        const BSDF *bsdf = its.mesh->getBSDF();
+        if (!bsdf->isDiffuse()) {
+            // Handle specular materials (mirror, dielectric)
             
-            // Sample a point on the chosen emitter
-            Point2f sample = sampler->next2D();
-            Point3f lightPos;
-            Vector3f lightNormal;
-            float lightPdf;
+            // Get a random number for Russian roulette
+            float xi = sampler->next1D();
             
-            Color3f Le = emitter->sample(its.p, sample, lightPos, lightNormal, lightPdf);
-            
-            if (lightPdf > 0.0f) {
-                // Compute direction from surface to light
-                Vector3f lightDir = lightPos - its.p;
-                float lightDistance = lightDir.norm();
-                lightDir /= lightDistance; // normalize
+            if (xi < 0.95f) {
+                // Sample the specular BSDF
+                BSDFQueryRecord bRec(its.toLocal(-ray.d));
+                Point2f sample = sampler->next2D();
+                Color3f c = bsdf->sample(bRec, sample);
                 
-                // Check visibility
-                Ray3f shadowRay(its.p + its.shFrame.n * Epsilon, lightDir, 
-                               Epsilon, lightDistance - Epsilon);
-                bool visible = !scene->rayIntersect(shadowRay);
+                if (!c.isZero()) {
+                    // Convert direction back to world coordinates
+                    Vector3f wr_world = its.toWorld(bRec.wo);
+                    
+                    // Choose appropriate surface offset based on ray direction
+                    Vector3f offset = its.shFrame.n * Epsilon;
+                    if (wr_world.dot(its.shFrame.n) < 0) {
+                        // Ray is going into the surface (refraction case)
+                        offset = -offset;
+                    }
+                    
+                    // Create the reflected/refracted ray
+                    Ray3f reflectedRay(its.p + offset, wr_world);
+                    
+                    // Recursively trace the reflected/refracted ray
+                    Color3f Li_recursive = Li(scene, sampler, reflectedRay);
+                    
+                    // Return the weighted contribution
+                    result += (1.0f / 0.95f) * c * Li_recursive;
+                }
+            }
+            // Otherwise, return only the direct emission (if any)
+        } else {
+            // Handle diffuse materials - sample direct illumination from emitters
+            const auto &emitters = scene->getEmitters();
+            if (!emitters.empty()) {
+                // Pick an emitter uniformly at random
+                uint32_t emitterIndex = std::min((uint32_t)(sampler->next1D() * emitters.size()), 
+                                               (uint32_t)emitters.size() - 1);
+                const Emitter *emitter = emitters[emitterIndex];
+                float emitterPdf = 1.0f / emitters.size();
                 
-                if (visible) {
-                    // Evaluate BSDF
-                    BSDFQueryRecord bRec(its.toLocal(-ray.d), its.toLocal(lightDir), ESolidAngle);
-                    Color3f fr = its.mesh->getBSDF()->eval(bRec);
+                // Sample a point on the chosen emitter
+                Point2f sample = sampler->next2D();
+                Point3f lightPos;
+                Vector3f lightNormal;
+                float lightPdf;
+                
+                Color3f Le = emitter->sample(its.p, sample, lightPos, lightNormal, lightPdf);
+                
+                if (lightPdf > 0.0f) {
+                    // Compute direction from surface to light
+                    Vector3f lightDir = lightPos - its.p;
+                    float lightDistance = lightDir.norm();
+                    lightDir /= lightDistance; // normalize
                     
-                    // Compute geometric term G(x ↔ y)
-                    float cosTheta_x = std::max(0.0f, its.shFrame.n.dot(lightDir));
-                    float cosTheta_y = std::max(0.0f, lightNormal.dot(-lightDir));
-                    float G = visible ? (cosTheta_x * cosTheta_y) / (lightDistance * lightDistance) : 0.0f;
+                    // Check visibility
+                    Ray3f shadowRay(its.p + its.shFrame.n * Epsilon, lightDir, 
+                                   Epsilon, lightDistance - Epsilon);
+                    bool visible = !scene->rayIntersect(shadowRay);
                     
-                    // Add contribution: fr * G * Le / (lightPdf * emitterPdf)
-                    result += fr * G * Le / (lightPdf * emitterPdf);
+                    if (visible) {
+                        // Evaluate BSDF
+                        BSDFQueryRecord bRec(its.toLocal(-ray.d), its.toLocal(lightDir), ESolidAngle);
+                        Color3f fr = bsdf->eval(bRec);
+                        
+                        // Compute geometric term G(x ↔ y)
+                        float cosTheta_x = std::max(0.0f, its.shFrame.n.dot(lightDir));
+                        float cosTheta_y = std::max(0.0f, lightNormal.dot(-lightDir));
+                        float G = visible ? (cosTheta_x * cosTheta_y) / (lightDistance * lightDistance) : 0.0f;
+                        
+                        // Add contribution: fr * G * Le / (lightPdf * emitterPdf)
+                        result += fr * G * Le / (lightPdf * emitterPdf);
+                    }
                 }
             }
         }

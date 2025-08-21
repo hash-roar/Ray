@@ -46,6 +46,8 @@ public:
     /// Evaluate the radiance emitted from point p in direction d
     Color3f eval(const Point3f &p, const Vector3f &d) const override {
         // Area lights emit uniformly in all directions above the surface
+        // For now, we'll use a simple check - in practice, this should be more sophisticated
+        // and should get the actual surface normal at point p
         return m_radiance;
     }
 

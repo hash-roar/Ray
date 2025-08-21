@@ -43,7 +43,58 @@ public:
     }
 
     Color3f sample(BSDFQueryRecord &bRec, const Point2f &sample) const {
-        throw NoriException("Unimplemented!");
+        float cosThetaI = Frame::cosTheta(bRec.wi);
+        bool entering = cosThetaI > 0.0f;
+        
+        /* Determine the relative IOR and relevant indices */
+        float etaI = entering ? m_extIOR : m_intIOR;
+        float etaT = entering ? m_intIOR : m_extIOR;
+        float eta = etaI / etaT;
+        
+        /* Make sure cosThetaI is positive for Fresnel computation */
+        if (!entering) {
+            cosThetaI = -cosThetaI;
+        }
+        
+        /* Compute the Fresnel reflectance */
+        float Fr = fresnel(cosThetaI, m_extIOR, m_intIOR);
+        
+        /* Compute sine squared of transmitted angle using Snell's law */
+        float sin2ThetaT = eta * eta * (1.0f - cosThetaI * cosThetaI);
+        
+        /* Check for total internal reflection */
+        bool totalInternalReflection = (sin2ThetaT >= 1.0f);
+        
+        if (sample.x() <= Fr || totalInternalReflection) {
+            /* Sample reflection (either normal reflection or total internal reflection) */
+            bRec.wo = Vector3f(
+                -bRec.wi.x(),
+                -bRec.wi.y(),
+                bRec.wi.z()
+            );
+            bRec.measure = EDiscrete;
+            bRec.eta = 1.0f;  /* No change in medium for reflection */
+            
+            return Color3f(1.0f);
+        } else {
+            /* Sample refraction */
+            float cosThetaT = std::sqrt(1.0f - sin2ThetaT);
+            
+            /* Compute refracted direction */
+            Vector3f wt = eta * (-bRec.wi) + (eta * cosThetaI - cosThetaT) * Vector3f(0, 0, 1);
+            
+            /* Handle the case when ray is coming from inside the material */
+            if (!entering) {
+                wt.z() = -wt.z();
+            }
+            
+            bRec.wo = wt.normalized();
+            bRec.measure = EDiscrete;
+            bRec.eta = eta;
+            
+            /* The transmitted radiance is scaled by eta^2 due to solid angle compression */
+            return Color3f(eta * eta);
+        }
     }
 
     std::string toString() const {
