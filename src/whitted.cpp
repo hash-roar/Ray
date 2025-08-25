@@ -54,8 +54,9 @@ public:
             
             // Get a random number for Russian roulette
             float xi = sampler->next1D();
-            
-            if (xi < 0.95f) {
+            constexpr float RussianRoulette = 0.95f;
+
+            if (xi < RussianRoulette) {
                 // Sample the specular BSDF
                 BSDFQueryRecord bRec(its.toLocal(-ray.d));
                 Point2f sample = sampler->next2D();
@@ -79,7 +80,7 @@ public:
                     Color3f Li_recursive = Li(scene, sampler, reflectedRay);
                     
                     // Return the weighted contribution
-                    result += (1.0f / 0.95f) * c * Li_recursive;
+                    result += (1.0f / RussianRoulette) * c * Li_recursive;
                 }
             }
             // Otherwise, return only the direct emission (if any)

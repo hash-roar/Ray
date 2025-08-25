@@ -184,7 +184,7 @@ public:
         /* While microfacet BRDFs are not perfectly diffuse, they can be
            handled by sampling techniques for diffuse/non-specular materials,
            hence we return true here */
-        return true;
+        return false;
     }
 
     std::string toString() const {
