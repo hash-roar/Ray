@@ -65,9 +65,9 @@ public:
             /* Get the BSDF at the intersection point */
             const BSDF *bsdf = its.mesh->getBSDF();
 
-            /* Direct illumination via emitter sampling (only for diffuse materials) */
+            /* Direct illumination via emitter sampling */
             const auto &emitters = scene->getEmitters();
-            if (!emitters.empty() && bsdf->isDiffuse()) {
+            if (!emitters.empty()) {
                 /* Pick an emitter uniformly at random */
                 uint32_t emitterIndex = std::min((uint32_t)(sampler->next1D() * emitters.size()), 
                                                (uint32_t)emitters.size() - 1);
@@ -153,10 +153,7 @@ public:
                 offset = -offset;
             }
             /* Update current ray for next iteration */
-            currentRay.o = its.p + offset;
-            currentRay.d = nextDir;
-            currentRay.mint = Epsilon;
-            currentRay.maxt = INFINITY;
+            currentRay = Ray3f(its.p + offset, nextDir);
         }
 
         return radiance;

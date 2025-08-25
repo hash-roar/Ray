@@ -100,10 +100,7 @@ public:
             }
             
             /* Update current ray for next iteration */
-            currentRay.o = its.p + offset;
-            currentRay.d = nextDir;
-            currentRay.mint = Epsilon;
-            currentRay.maxt = INFINITY;
+            currentRay = Ray3f(its.p + offset, nextDir);
         }
 
         return radiance;
