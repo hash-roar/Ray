@@ -1,7 +1,7 @@
 #include <nori/gui.h>
 #include <nori/block.h>
-#include <nanogui/shader.h>
 #include <nanogui/label.h>
+#include <nanogui/shader.h>
 #include <nanogui/slider.h>
 #include <nanogui/layout.h>
 #include <nanogui/renderpass.h>

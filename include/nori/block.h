@@ -24,7 +24,8 @@
 
 #include <nori/color.h>
 #include <nori/vector.h>
-#include <tbb/mutex.h>
+#include <tbb/spin_mutex.h>
+
 
 #define NORI_BLOCK_SIZE 32 /* Block size used for parallelization */
 
