@@ -25,14 +25,14 @@
 NORI_NAMESPACE_BEGIN
 
 /**
- * \brief Material sampling path tracer
+ * \brief Emitter sampling path tracer
  * 
- * This integrator implements a simple path tracer that relies on hitting
- * light sources by chance instead of explicit emitter sampling.
+ * This integrator implements a path tracer with explicit emitter sampling
+ * to reduce variance compared to the naive material sampling approach.
  */
-class PathMatsIntegrator : public Integrator {
+class PathEmsIntegrator : public Integrator {
 public:
-    PathMatsIntegrator(const PropertyList &props) {
+    PathEmsIntegrator(const PropertyList &props) {
         /* No parameters needed for this integrator */
     }
 
@@ -41,6 +41,7 @@ public:
         Color3f throughput(1.0f);
         Ray3f currentRay(ray);
         float eta = 1.0f;
+        bool lastBounceSpecular = false;
         
         /* Iterative path tracing loop */
         for (int bounces = 0; ; ++bounces) {
@@ -54,13 +55,63 @@ public:
             /* Add emission if we hit an emitter */
             if (its.mesh->isEmitter()) {
                 Vector3f wo = -currentRay.d.normalized();
-                radiance += throughput * its.mesh->getEmitter()->eval(its.p, wo);
+                if (bounces == 0 || lastBounceSpecular) {
+                    /* Direct hit from camera or after specular bounce - count emission */
+                    radiance += throughput * its.mesh->getEmitter()->eval(its.p, wo);
+                }
+                /* For non-specular indirect hits, we skip adding emission to avoid double counting */
             }
 
             /* Get the BSDF at the intersection point */
             const BSDF *bsdf = its.mesh->getBSDF();
 
-            /* Sample the BSDF to get a new direction */
+            /* Direct illumination via emitter sampling (only for diffuse materials) */
+            const auto &emitters = scene->getEmitters();
+            if (!emitters.empty() && bsdf->isDiffuse()) {
+                /* Pick an emitter uniformly at random */
+                uint32_t emitterIndex = std::min((uint32_t)(sampler->next1D() * emitters.size()), 
+                                               (uint32_t)emitters.size() - 1);
+                const Emitter *emitter = emitters[emitterIndex];
+                float emitterPdf = 1.0f / emitters.size();
+                
+                /* Sample a point on the chosen emitter */
+                Point2f sample = sampler->next2D();
+                Point3f lightPos;
+                Vector3f lightNormal;
+                float lightPdf;
+                
+                Color3f Le = emitter->sample(its.p, sample, lightPos, lightNormal, lightPdf);
+                
+                if (lightPdf > 0.0f && !Le.isZero()) {
+                    /* Compute direction from surface to light */
+                    Vector3f lightDir = lightPos - its.p;
+                    float lightDistance = lightDir.norm();
+                    lightDir /= lightDistance; // normalize
+                    
+                    /* Check visibility */
+                    Ray3f shadowRay(its.p + its.shFrame.n * Epsilon, lightDir, 
+                                   Epsilon, lightDistance - Epsilon);
+                    bool visible = !scene->rayIntersect(shadowRay);
+                    
+                    if (visible) {
+                        /* Evaluate BSDF */
+                        BSDFQueryRecord bRec(its.toLocal(-currentRay.d), its.toLocal(lightDir), ESolidAngle);
+                        Color3f fr = bsdf->eval(bRec);
+                        
+                        if (!fr.isZero()) {
+                            /* Compute geometric term */
+                            float cosTheta_x = std::max(0.0f, its.shFrame.n.dot(lightDir));
+                            float cosTheta_y = std::max(0.0f, lightNormal.dot(-lightDir));
+                            float G = (cosTheta_x * cosTheta_y) / (lightDistance * lightDistance);
+                            
+                            /* Add direct illumination contribution */
+                            radiance += throughput * fr * G * Le / (lightPdf * emitterPdf);
+                        }
+                    }
+                }
+            }
+
+            /* Sample the BSDF to get a new direction for indirect illumination */
             BSDFQueryRecord bRec(its.toLocal(-currentRay.d));
             Point2f sample = sampler->next2D();
             Color3f f = bsdf->sample(bRec, sample);
@@ -75,6 +126,9 @@ public:
             
             /* Update eta (relative index of refraction) */
             eta *= bRec.eta;
+
+            /* Track if this bounce was specular */
+            lastBounceSpecular = !bsdf->isDiffuse();
 
             /* Russian Roulette termination (after at least 3 bounces) */
             if (bounces >= 3) {
@@ -98,7 +152,6 @@ public:
                 /* Ray is going into the surface */
                 offset = -offset;
             }
-            
             /* Update current ray for next iteration */
             currentRay.o = its.p + offset;
             currentRay.d = nextDir;
@@ -110,10 +163,10 @@ public:
     }
 
     std::string toString() const override {
-        return "PathMatsIntegrator[]";
+        return "PathEmsIntegrator[]";
     }
 };
 
-NORI_REGISTER_CLASS(PathMatsIntegrator, "path_mats");
+NORI_REGISTER_CLASS(PathEmsIntegrator, "path_ems");
 
 NORI_NAMESPACE_END
